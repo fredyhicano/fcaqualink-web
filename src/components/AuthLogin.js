@@ -10,13 +10,19 @@ const AuthLogin = ({ onLogin, onSwitchView }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-100 to-cyan-100 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gradient-to-br from-blue-500 via-cyan-300 to-emerald-300 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
-        <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
-          FCAquaLink
+        {/* Logo agregado aquí */}
+        <img
+          src="/assets/84427232.svg"
+          alt="Logo FCAquaLink"
+          className="w-60 h-auto mx-auto mb-4"
+        />
+        <h2 className="text-center text-3xl font-extrabold text-gray-900">
+          Universidad Mariano Galvez Guatemala
         </h2>
         <p className="mt-2 text-center text-sm text-gray-600">
-          Monitoreo Inteligente de Calidad de Agua
+          Ingeniería en Sistemas de Información y Ciencias de la Computación
         </p>
       </div>
 
@@ -61,14 +67,14 @@ const AuthLogin = ({ onLogin, onSwitchView }) => {
             </div>
           </form>
           <div className="mt-6 text-center">
-            <button 
+            <button
               onClick={() => onSwitchView('register')}
               className="text-sm text-blue-600 hover:text-blue-500"
             >
               Crear una cuenta
             </button>
             <span className="mx-2 text-gray-400">|</span>
-            <button 
+            <button
               onClick={() => onSwitchView('reset')}
               className="text-sm text-blue-600 hover:text-blue-500"
             >
