@@ -4,7 +4,54 @@ import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { saveAs } from 'file-saver';
+import useNodeRedWS from '../hooks/useNodeRedWS'; // <<--- usamos el hook
 
+// Mapa entre etiqueta visible y clave interna
+const KEY_BY_NAME = {
+  ORP: 'orp',
+  Conductividad: 'conduct',
+  Turbidez: 'turbidez',
+  pH: 'ph',
+  Temperatura: 'temp',
+  TDS: 'tds',
+};
+
+// ------------------ Umbrales de calidad (ajústalos si hace falta) ------------------
+function calcQuality(name, value) {
+  if (value == null || Number.isNaN(Number(value))) return 'Desconocida';
+  const v = Number(value);
+
+  switch (name) {
+    case 'pH':
+      if (v >= 6.5 && v <= 8.5) return 'Buena';
+      if (v >= 6.0 && v <= 9.0) return 'Regular';
+      return 'Mala';
+    case 'ORP':
+      if (v > 300) return 'Buena';
+      if (v >= 100) return 'Regular';
+      return 'Mala';
+    case 'Turbidez':
+      if (v < 1) return 'Buena';
+      if (v <= 5) return 'Regular';
+      return 'Mala';
+    case 'Conductividad':
+      if (v < 500) return 'Buena';
+      if (v <= 1000) return 'Regular';
+      return 'Mala';
+    case 'Temperatura':
+      if (v >= 15 && v <= 30) return 'Buena';
+      if ((v >= 10 && v < 15) || (v > 30 && v <= 35)) return 'Regular';
+      return 'Mala';
+    case 'TDS':
+      if (v < 500) return 'Buena';
+      if (v <= 1000) return 'Regular';
+      return 'Mala';
+    default:
+      return 'Desconocida';
+  }
+}
+
+// ------------------ Dashboard ------------------
 const DashboardSensors = () => {
   const [sensors, setSensors] = useState([
     { id: 1, name: 'ORP', value: 0, unit: 'mV', quality: 'Desconocida' },
@@ -15,32 +62,75 @@ const DashboardSensors = () => {
     { id: 6, name: 'TDS', value: 0, unit: 'ppm', quality: 'Desconocida' }
   ]);
 
-  useEffect(() => {
-    const fetchSensorData = async () => {
-      try {
-        const res = await fetch('http://localhost:3001/api/sensores', {
-          method: 'GET',
-          headers: { 'Content-Type': 'application/json' }
-        });
+  // ---------- WebSocket con hook ----------
+  const { status, lastMessage, wsUrl } = useNodeRedWS();
 
-        if (!res.ok) {
-          console.error(`Error HTTP: ${res.status}`);
-          return;
-        }
+  // Normaliza cualquier payload entrante -> objeto { ph, orp, ... }
+  const normalizeIncoming = (raw) => {
+    if (!raw) return null;
 
-        const data = await res.json();
-        if (Array.isArray(data) && data.length === sensors.length) {
-          setSensors(data);
-        }
-      } catch (error) {
-        console.error('Error al obtener datos de sensores:', error.message);
+    // 1) Formato Node-RED normalizado (1 muestra)
+    //    { ts, thingId, propertyId, name, value, unit }
+    if (
+      typeof raw === 'object' &&
+      !Array.isArray(raw) &&
+      ('propertyId' in raw) &&
+      ('value' in raw)
+    ) {
+      const key = String(raw.propertyId).toLowerCase(); // ej. "ph"
+      return { [key]: Number(raw.value) };
+    }
+
+    // 2) Objeto directo { ph, orp, ... }
+    if (!Array.isArray(raw) && typeof raw === 'object') {
+      return raw;
+    }
+
+    // 3) Array de objetos con name/value o Sensor/Valor
+    if (Array.isArray(raw) && raw.length && typeof raw[0] === 'object' && ('name' in raw[0] || 'Sensor' in raw[0])) {
+      const obj = {};
+      for (const item of raw) {
+        const label = item.name || item.Sensor || item.sensor || '';
+        const key = KEY_BY_NAME[label];
+        if (key) obj[key] = Number(item.value ?? item.Valor ?? item.val ?? 0);
       }
-    };
+      return obj;
+    }
 
-    fetchSensorData();
-    const interval = setInterval(fetchSensorData, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    // 4) Array posicional en el orden de UI
+    if (Array.isArray(raw) && raw.length === sensors.length) {
+      const obj = {};
+      sensors.forEach((s, i) => {
+        const key = KEY_BY_NAME[s.name];
+        if (key) obj[key] = Number(raw[i]);
+      });
+      return obj;
+    }
+
+    return null;
+  };
+
+  // Cuando llega un mensaje, actualizamos el estado
+  useEffect(() => {
+    if (!lastMessage) return;
+    const data = normalizeIncoming(lastMessage);
+    if (!data) return;
+
+    setSensors((prev) =>
+      prev.map((s) => {
+        const key = KEY_BY_NAME[s.name];
+        if (!key) return s;
+
+        const has = Object.prototype.hasOwnProperty.call(data, key);
+        if (!has) return s;
+
+        const nextVal = Number(data[key]);
+        const nextQuality = calcQuality(s.name, nextVal);
+        return { ...s, value: nextVal, quality: nextQuality };
+      })
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastMessage]);
 
   const getMaxValue = (name) => {
     switch (name) {
@@ -55,11 +145,9 @@ const DashboardSensors = () => {
   };
 
   const exportToExcel = () => {
-    const worksheet = XLSX.utils.json_to_sheet(sensors.map(s => ({
-      Sensor: s.name,
-      Valor: `${s.value} ${s.unit}`,
-      Calidad: s.quality
-    })));
+    const worksheet = XLSX.utils.json_to_sheet(
+      sensors.map(s => ({ Sensor: s.name, Valor: s.value, Unidad: s.unit, Calidad: s.quality }))
+    );
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Sensores');
     const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
@@ -73,18 +161,17 @@ const DashboardSensors = () => {
     autoTable(doc, {
       startY: 30,
       head: [['Sensor', 'Valor', 'Unidad', 'Calidad']],
-      body: sensors.map(s => [
-        s.name,
-        s.value,
-        s.unit,
-        s.quality
-      ])
+      body: sensors.map(s => [s.name, s.value, s.unit, s.quality])
     });
     doc.save(`datos_sensores_${new Date().toISOString().slice(0, 10)}.pdf`);
   };
 
   return (
     <div className="container mx-auto px-4 py-8">
+      <div className="mb-4 text-sm text-gray-600">
+        WebSocket: <b>{status}</b> <span className="ml-2">({wsUrl})</span>
+      </div>
+
       <h2 className="text-2xl font-bold mb-6 text-gray-800">Sensores de Calidad de Agua</h2>
 
       <div className="flex justify-end gap-4 mb-6">
@@ -122,12 +209,12 @@ const DashboardSensors = () => {
             </p>
             <p>
               Calidad:{' '}
-              <span className={`font-bold ${sensor.quality === 'Buena'
-                ? 'text-green-600'
-                : sensor.quality === 'Regular'
-                  ? 'text-yellow-600'
-                  : 'text-red-600'
-                }`}>
+              <span
+                className={`font-bold ${sensor.quality === 'Buena' ? 'text-green-600'
+                    : sensor.quality === 'Regular' ? 'text-yellow-600'
+                      : 'text-red-600'
+                  }`}
+              >
                 {sensor.quality}
               </span>
             </p>
