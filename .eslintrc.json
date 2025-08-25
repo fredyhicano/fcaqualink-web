@@ -1,0 +1,14 @@
+{
+    "extends": [
+        "react-app",
+        "react-app/jest",
+        "plugin:tailwindcss/recommended",
+        "plugin:prettier/recommended"
+    ],
+    "plugins": [
+        "tailwindcss"
+    ],
+    "rules": {
+        "tailwindcss/classnames-order": "warn"
+    }
+}

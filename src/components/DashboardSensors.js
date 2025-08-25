@@ -1,103 +1,234 @@
-import React, { useState, useEffect } from 'react';
-import GaugeChart from 'react-gauge-chart';
-import * as XLSX from 'xlsx';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import { saveAs } from 'file-saver';
-import useNodeRedWS from '../hooks/useNodeRedWS'; // <<--- usamos el hook
+/* eslint-disable tailwindcss/classnames-order */
+import { saveAs } from "file-saver";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
+import React, { useEffect, useMemo, useState } from "react";
+import GaugeChart from "react-gauge-chart";
+import * as XLSX from "xlsx";
+import useNodeRedWS from "../hooks/useNodeRedWS";
 
-// Mapa entre etiqueta visible y clave interna
+// === Mapa entre etiqueta visible y clave interna ===
 const KEY_BY_NAME = {
-  ORP: 'orp',
-  Conductividad: 'conduct',
-  Turbidez: 'turbidez',
-  pH: 'ph',
-  Temperatura: 'temp',
-  TDS: 'tds',
+  ORP: "orp",
+  Conductividad: "conductividad",
+  Turbidez: "turbidez",
+  pH: "ph",
+  Temperatura: "temperatura",
+  TDS: "tds",
 };
 
-// ------------------ Umbrales de calidad (ajústalos si hace falta) ------------------
+const NAME_TO_KEY = Object.fromEntries(
+  Object.entries(KEY_BY_NAME).map(([k, v]) => [k.toLowerCase(), v]),
+);
+
+const PROPERTY_ID_TO_KEY = {
+  1: "ph",
+  2: "turbidez",
+  3: "tds",
+  4: "temperatura",
+  5: "conductividad",
+  6: "orp",
+};
+
+// ------------------ Umbrales de calidad ------------------
 function calcQuality(name, value) {
-  if (value == null || Number.isNaN(Number(value))) return 'Desconocida';
+  if (value == null || Number.isNaN(Number(value))) return "Desconocida";
   const v = Number(value);
 
   switch (name) {
-    case 'pH':
-      if (v >= 6.5 && v <= 8.5) return 'Buena';
-      if (v >= 6.0 && v <= 9.0) return 'Regular';
-      return 'Mala';
-    case 'ORP':
-      if (v > 300) return 'Buena';
-      if (v >= 100) return 'Regular';
-      return 'Mala';
-    case 'Turbidez':
-      if (v < 1) return 'Buena';
-      if (v <= 5) return 'Regular';
-      return 'Mala';
-    case 'Conductividad':
-      if (v < 500) return 'Buena';
-      if (v <= 1000) return 'Regular';
-      return 'Mala';
-    case 'Temperatura':
-      if (v >= 15 && v <= 30) return 'Buena';
-      if ((v >= 10 && v < 15) || (v > 30 && v <= 35)) return 'Regular';
-      return 'Mala';
-    case 'TDS':
-      if (v < 500) return 'Buena';
-      if (v <= 1000) return 'Regular';
-      return 'Mala';
+    case "pH":
+      return v >= 6.5 && v <= 8.5 ? "Buena" : v >= 6.0 && v <= 9.0 ? "Regular" : "Mala";
+
+    case "ORP":
+      return v > 300 ? "Buena" : v >= 100 ? "Regular" : "Mala";
+
+    case "Turbidez":
+      return v < 1 ? "Buena" : v <= 5 ? "Regular" : "Mala";
+
+    case "Conductividad":
+      return v < 500 ? "Buena" : v <= 1000 ? "Regular" : "Mala";
+
+    case "Temperatura":
+      return v >= 15 && v <= 30
+        ? "Buena"
+        : (v >= 10 && v < 15) || (v > 30 && v <= 35)
+          ? "Regular"
+          : "Mala";
+
+    case "TDS":
+      return v < 500 ? "Buena" : v <= 1000 ? "Regular" : "Mala";
+
     default:
-      return 'Desconocida';
+      return "Desconocida";
   }
+}
+
+// ---------- helpers visuales ----------
+const getMaxValue = (name) => {
+  switch (name) {
+    case "ORP":
+      return 500;
+    case "Conductividad":
+      return 1000;
+    case "Turbidez":
+      return 10;
+    case "pH":
+      return 14;
+    case "Temperatura":
+      return 50;
+    case "TDS":
+      return 1000;
+    default:
+      return 100;
+  }
+};
+
+const clampPercent = (name, value) => {
+  const max = getMaxValue(name);
+  const pct = max > 0 ? Number(value) / max : 0;
+  const safe = Number.isFinite(pct) ? pct : 0;
+  return Math.max(0, Math.min(1, safe));
+};
+
+const formatValue = (name, value) => {
+  const opts =
+    name === "pH"
+      ? { minimumFractionDigits: 2, maximumFractionDigits: 2 }
+      : { maximumFractionDigits: 1 };
+  return Number(value ?? 0).toLocaleString(undefined, opts);
+};
+
+// --------- helpers historial ----------
+const LS_KEY = "sensorHistoryV1";
+
+function sensorsToRecord(array) {
+  const rec = { ts: new Date().toISOString() };
+  array.forEach((s) => {
+    const key = KEY_BY_NAME[s.name];
+    if (key) rec[key] = Number(s.value ?? 0);
+  });
+  return rec;
+}
+
+function loadHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(LS_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(hist) {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(hist));
+  } catch {
+    // ignore
+  }
+}
+
+function fmtDateTime(ts) {
+  return new Date(ts).toLocaleString();
+}
+
+function sameDay(ts, yyyy_mm_dd) {
+  const d = new Date(ts);
+  const [y, m, day] = yyyy_mm_dd.split("-").map(Number);
+  return d.getFullYear() === y && d.getMonth() + 1 === m && d.getDate() === day;
+}
+
+function inRange(ts, startISO, endISO) {
+  const t = new Date(ts).getTime();
+  const a = startISO ? new Date(startISO).getTime() : -Infinity;
+  const b = endISO ? new Date(`${endISO}T23:59:59.999`).getTime() : Infinity;
+  return t >= a && t <= b;
+}
+
+function sameMonth(ts, yyyy_mm) {
+  const d = new Date(ts);
+  const [y, m] = yyyy_mm.split("-").map(Number);
+  return d.getFullYear() === y && d.getMonth() + 1 === m;
 }
 
 // ------------------ Dashboard ------------------
 const DashboardSensors = () => {
   const [sensors, setSensors] = useState([
-    { id: 1, name: 'ORP', value: 0, unit: 'mV', quality: 'Desconocida' },
-    { id: 2, name: 'Conductividad', value: 0, unit: 'µS/cm', quality: 'Desconocida' },
-    { id: 3, name: 'Turbidez', value: 0, unit: 'NTU', quality: 'Desconocida' },
-    { id: 4, name: 'pH', value: 0, unit: '', quality: 'Desconocida' },
-    { id: 5, name: 'Temperatura', value: 0, unit: '°C', quality: 'Desconocida' },
-    { id: 6, name: 'TDS', value: 0, unit: 'ppm', quality: 'Desconocida' }
+    { id: 1, name: "ORP", value: 0, unit: "mV", quality: "Desconocida" },
+    {
+      id: 2,
+      name: "Conductividad",
+      value: 0,
+      unit: "µS/cm",
+      quality: "Desconocida",
+    },
+    { id: 3, name: "Turbidez", value: 0, unit: "NTU", quality: "Desconocida" },
+    { id: 4, name: "pH", value: 0, unit: "", quality: "Desconocida" },
+    {
+      id: 5,
+      name: "Temperatura",
+      value: 0,
+      unit: "°C",
+      quality: "Desconocida",
+    },
+    { id: 6, name: "TDS", value: 0, unit: "ppm", quality: "Desconocida" },
   ]);
 
-  // ---------- WebSocket con hook ----------
   const { status, lastMessage, wsUrl } = useNodeRedWS();
+
+  // pestañas: monitoreo / historial
+  const [view, setView] = useState("monitoreo");
+
+  // ---------- historial ----------
+  const [history, setHistory] = useState(() => loadHistory());
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const thisMonthISO = new Date().toISOString().slice(0, 7);
+  const [mode, setMode] = useState("dia"); // 'dia' | 'rango' | 'mes'
+  const [dayISO, setDayISO] = useState(todayISO);
+  const [startISO, setStartISO] = useState(todayISO);
+  const [endISO, setEndISO] = useState(todayISO);
+  const [monthISO, setMonthISO] = useState(thisMonthISO);
 
   // Normaliza cualquier payload entrante -> objeto { ph, orp, ... }
   const normalizeIncoming = (raw) => {
-    if (!raw) return null;
+    if (raw == null) return null;
 
-    // 1) Formato Node-RED normalizado (1 muestra)
-    //    { ts, thingId, propertyId, name, value, unit }
-    if (
-      typeof raw === 'object' &&
-      !Array.isArray(raw) &&
-      ('propertyId' in raw) &&
-      ('value' in raw)
-    ) {
-      const key = String(raw.propertyId).toLowerCase(); // ej. "ph"
-      return { [key]: Number(raw.value) };
+    if (typeof raw === "string") {
+      try {
+        raw = JSON.parse(raw);
+      } catch {
+        // ignore
+      }
     }
 
-    // 2) Objeto directo { ph, orp, ... }
-    if (!Array.isArray(raw) && typeof raw === 'object') {
-      return raw;
+    // 1) Uno por uno
+    if (typeof raw === "object" && !Array.isArray(raw) && "value" in raw) {
+      if (raw.name) {
+        const k =
+          NAME_TO_KEY[String(raw.name).toLowerCase()] || String(raw.name).toLowerCase();
+        return { [k]: Number(raw.value) };
+      }
+      if (raw.property_id != null || raw.propertyId != null) {
+        const pid = Number(raw.property_id ?? raw.propertyId);
+        const k = PROPERTY_ID_TO_KEY[pid];
+        if (k) return { [k]: Number(raw.value) };
+      }
     }
 
-    // 3) Array de objetos con name/value o Sensor/Valor
-    if (Array.isArray(raw) && raw.length && typeof raw[0] === 'object' && ('name' in raw[0] || 'Sensor' in raw[0])) {
+    // 2) Objeto directo
+    if (typeof raw === "object" && !Array.isArray(raw)) return raw;
+
+    // 3) Array de objetos
+    if (Array.isArray(raw) && raw.length && typeof raw[0] === "object") {
       const obj = {};
       for (const item of raw) {
-        const label = item.name || item.Sensor || item.sensor || '';
-        const key = KEY_BY_NAME[label];
+        const label = item.name || item.Sensor || item.sensor || "";
+        if (!label) continue;
+        const key = NAME_TO_KEY[String(label).toLowerCase()];
         if (key) obj[key] = Number(item.value ?? item.Valor ?? item.val ?? 0);
       }
       return obj;
     }
 
-    // 4) Array posicional en el orden de UI
+    // 4) Array posicional según UI
     if (Array.isArray(raw) && raw.length === sensors.length) {
       const obj = {};
       sensors.forEach((s, i) => {
@@ -110,117 +241,374 @@ const DashboardSensors = () => {
     return null;
   };
 
-  // Cuando llega un mensaje, actualizamos el estado
+  // Cuando llega un mensaje, actualizamos gauges y registramos snapshot en historial
   useEffect(() => {
     if (!lastMessage) return;
     const data = normalizeIncoming(lastMessage);
     if (!data) return;
 
-    setSensors((prev) =>
-      prev.map((s) => {
+    let nextArray = null;
+
+    setSensors((prev) => {
+      nextArray = prev.map((s) => {
         const key = KEY_BY_NAME[s.name];
-        if (!key) return s;
+        if (!key || !(key in data)) return s;
+        const val = Number.isFinite(Number(data[key])) ? Number(data[key]) : 0;
+        return { ...s, value: val, quality: calcQuality(s.name, val) };
+      });
+      return nextArray;
+    });
 
-        const has = Object.prototype.hasOwnProperty.call(data, key);
-        if (!has) return s;
-
-        const nextVal = Number(data[key]);
-        const nextQuality = calcQuality(s.name, nextVal);
-        return { ...s, value: nextVal, quality: nextQuality };
-      })
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lastMessage]);
-
-  const getMaxValue = (name) => {
-    switch (name) {
-      case 'ORP': return 500;
-      case 'Conductividad': return 1000;
-      case 'Turbidez': return 10;
-      case 'pH': return 14;
-      case 'Temperatura': return 50;
-      case 'TDS': return 1000;
-      default: return 100;
+    if (nextArray) {
+      const rec = sensorsToRecord(nextArray);
+      setHistory((prev) => {
+        const next = [...prev, rec].slice(-10000); // limita crecimiento
+        saveHistory(next);
+        return next;
+      });
     }
-  };
+  }, [lastMessage]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const exportToExcel = () => {
+  // Historial filtrado
+  const filteredHistory = useMemo(() => {
+    if (mode === "dia") return history.filter((r) => sameDay(r.ts, dayISO));
+    if (mode === "rango") return history.filter((r) => inRange(r.ts, startISO, endISO));
+    return history.filter((r) => sameMonth(r.ts, monthISO));
+  }, [history, mode, dayISO, startISO, endISO, monthISO]);
+
+  // Resumen (promedio)
+  const summary = useMemo(() => {
+    if (!filteredHistory.length) return null;
+
+    const keys = ["ph", "turbidez", "tds", "temperatura", "conductividad", "orp"];
+
+    const acc = {};
+    keys.forEach((k) => (acc[k] = 0));
+
+    filteredHistory.forEach((r) => keys.forEach((k) => (acc[k] += Number(r[k] ?? 0))));
+
+    const n = filteredHistory.length;
+    const avg = {};
+    keys.forEach((k) => (avg[k] = acc[k] / n));
+
+    return { n, avg };
+  }, [filteredHistory]);
+
+  // Exportaciones
+  const exportNowToExcel = () => {
     const worksheet = XLSX.utils.json_to_sheet(
-      sensors.map(s => ({ Sensor: s.name, Valor: s.value, Unidad: s.unit, Calidad: s.quality }))
+      sensors.map((s) => ({
+        Sensor: s.name,
+        Valor: s.value,
+        Unidad: s.unit,
+        Calidad: s.quality,
+      })),
     );
+
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sensores');
-    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-    const blob = new Blob([excelBuffer], { type: 'application/octet-stream' });
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Sensores");
+
+    const excelBuffer = XLSX.write(workbook, {
+      bookType: "xlsx",
+      type: "array",
+    });
+
+    const blob = new Blob([excelBuffer], { type: "application/octet-stream" });
+
     saveAs(blob, `datos_sensores_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  const exportToPDF = () => {
+  const exportNowToPDF = () => {
     const doc = new jsPDF();
-    doc.text('Reporte de Calidad del Agua', 14, 20);
+    doc.text("Reporte de Calidad del Agua", 14, 20);
+
     autoTable(doc, {
       startY: 30,
-      head: [['Sensor', 'Valor', 'Unidad', 'Calidad']],
-      body: sensors.map(s => [s.name, s.value, s.unit, s.quality])
+      head: [["Sensor", "Valor", "Unidad", "Calidad"]],
+      body: sensors.map((s) => [s.name, s.value, s.unit, s.quality]),
     });
+
     doc.save(`datos_sensores_${new Date().toISOString().slice(0, 10)}.pdf`);
+  };
+
+  const exportHistoryToExcel = () => {
+    const rows = filteredHistory.map((r) => ({
+      FechaHora: fmtDateTime(r.ts),
+      pH: r.ph,
+      Turbidez: r.turbidez,
+      TDS: r.tds,
+      Temperatura: r.temperatura,
+      Conductividad: r.conductividad,
+      ORP: r.orp,
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Historial");
+
+    const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([buf], { type: "application/octet-stream" });
+
+    saveAs(blob, `historial_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <div className="mb-4 text-sm text-gray-600">
+      <div className="mb-3 text-sm text-gray-600">
         WebSocket: <b>{status}</b> <span className="ml-2">({wsUrl})</span>
       </div>
 
-      <h2 className="text-2xl font-bold mb-6 text-gray-800">Sensores de Calidad de Agua</h2>
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-gray-800">Sensores de Calidad de Agua</h2>
 
-      <div className="flex justify-end gap-4 mb-6">
-        <button
-          onClick={exportToExcel}
-          className="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded"
-        >
-          Exportar a Excel
-        </button>
-        <button
-          onClick={exportToPDF}
-          className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded"
-        >
-          Exportar a PDF
-        </button>
+        {/* Pestañas */}
+        <div className="inline-flex overflow-hidden rounded-md shadow-sm">
+          <button
+            className={`px-4 py-2 text-sm font-semibold ${
+              view === "monitoreo"
+                ? "bg-blue-600 text-white"
+                : "bg-gray-200 text-gray-800"
+            }`}
+            onClick={() => setView("monitoreo")}
+          >
+            Monitoreo
+          </button>
+          <button
+            className={`px-4 py-2 text-sm font-semibold ${
+              view === "historial"
+                ? "bg-blue-600 text-white"
+                : "bg-gray-200 text-gray-800"
+            }`}
+            onClick={() => setView("historial")}
+          >
+            Historial
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {sensors.map((sensor) => (
-          <div key={sensor.id} className="bg-white shadow-lg rounded-lg p-6 hover:shadow-xl transition-shadow">
-            <h3 className="text-xl font-semibold mb-4 text-blue-600">{sensor.name}</h3>
+      {/* Botones según vista */}
+      {view === "monitoreo" ? (
+        <div className="mb-6 flex justify-end gap-4">
+          <button
+            onClick={exportNowToExcel}
+            className="rounded bg-green-600 px-4 py-2 font-semibold text-white hover:bg-green-700"
+          >
+            Exportar a Excel
+          </button>
+          <button
+            onClick={exportNowToPDF}
+            className="rounded bg-red-600 px-4 py-2 font-semibold text-white hover:bg-red-700"
+          >
+            Exportar a PDF
+          </button>
+        </div>
+      ) : (
+        <div className="mb-6 flex justify-end gap-4">
+          <button
+            onClick={exportHistoryToExcel}
+            className="rounded bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700"
+            disabled={!filteredHistory.length}
+            title={
+              !filteredHistory.length
+                ? "No hay datos filtrados"
+                : "Exportar historial filtrado"
+            }
+          >
+            Exportar Historial (Excel)
+          </button>
+        </div>
+      )}
 
-            <GaugeChart
-              id={`gauge-${sensor.id}`}
-              nrOfLevels={20}
-              percent={Math.min(sensor.value / getMaxValue(sensor.name), 1)}
-              colors={["#FF0000", "#FFBF00", "#00FF00"]}
-              arcWidth={0.3}
-              animate={true}
-              hideText={true}
-            />
+      {/* ====== MONITOREO ====== */}
+      {view === "monitoreo" && (
+        <div className="mb-10 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {sensors.map((sensor) => (
+            <div
+              key={sensor.id}
+              className="rounded-lg bg-white p-6 shadow-lg transition-shadow hover:shadow-xl"
+            >
+              <h3 className="mb-4 text-xl font-semibold text-blue-600">{sensor.name}</h3>
 
-            <p className="mt-4">
-              Valor: <span className="font-bold">{sensor.value} {sensor.unit}</span>
-            </p>
-            <p>
-              Calidad:{' '}
-              <span
-                className={`font-bold ${sensor.quality === 'Buena' ? 'text-green-600'
-                    : sensor.quality === 'Regular' ? 'text-yellow-600'
-                      : 'text-red-600'
+              <div className="relative pt-8">
+                <div
+                  className={
+                    "absolute -top-1 left-1/2 -translate-x-1/2 rounded-md bg-white/95 px-2 py-0.5 text-xs font-semibold shadow sm:text-sm " +
+                    (sensor.quality === "Buena"
+                      ? "text-green-600"
+                      : sensor.quality === "Regular"
+                        ? "text-yellow-600"
+                        : "text-red-600")
+                  }
+                >
+                  {formatValue(sensor.name, sensor.value)} {sensor.unit}
+                </div>
+
+                <GaugeChart
+                  id={`gauge-${sensor.id}`}
+                  nrOfLevels={20}
+                  percent={clampPercent(sensor.name, sensor.value)}
+                  colors={["#FF0000", "#FFBF00", "#00FF00"]}
+                  arcWidth={0.3}
+                  animate
+                  hideText
+                  style={{ width: "100%" }}
+                />
+              </div>
+
+              <p className="mt-3">
+                Calidad{" "}
+                <span
+                  className={`font-bold ${
+                    sensor.quality === "Buena"
+                      ? "text-green-600"
+                      : sensor.quality === "Regular"
+                        ? "text-yellow-600"
+                        : "text-red-600"
                   }`}
+                >
+                  {sensor.quality}
+                </span>
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ====== HISTORIAL ====== */}
+      {view === "historial" && (
+        <div className="rounded-lg bg-white p-6 shadow-lg">
+          <div className="mb-4 flex flex-col gap-4 md:flex-row md:items-end">
+            <div>
+              <label htmlFor="modeSel" className="mb-1 block text-sm font-medium">
+                Modo
+              </label>
+              <select
+                id="modeSel"
+                className="rounded border px-2 py-1"
+                value={mode}
+                onChange={(e) => setMode(e.target.value)}
               >
-                {sensor.quality}
-              </span>
-            </p>
+                <option value="dia">Por día</option>
+                <option value="rango">Por rango de fechas</option>
+                <option value="mes">Por mes y año</option>
+              </select>
+            </div>
+
+            {mode === "dia" && (
+              <div>
+                <label htmlFor="dayInp" className="mb-1 block text-sm font-medium">
+                  Fecha
+                </label>
+                <input
+                  id="dayInp"
+                  type="date"
+                  className="rounded border px-2 py-1"
+                  value={dayISO}
+                  onChange={(e) => setDayISO(e.target.value)}
+                />
+              </div>
+            )}
+
+            {mode === "rango" && (
+              <>
+                <div>
+                  <label htmlFor="rangeStart" className="mb-1 block text-sm font-medium">
+                    Desde
+                  </label>
+                  <input
+                    id="rangeStart"
+                    type="date"
+                    className="rounded border px-2 py-1"
+                    value={startISO}
+                    onChange={(e) => setStartISO(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="rangeEnd" className="mb-1 block text-sm font-medium">
+                    Hasta
+                  </label>
+                  <input
+                    id="rangeEnd"
+                    type="date"
+                    className="rounded border px-2 py-1"
+                    value={endISO}
+                    onChange={(e) => setEndISO(e.target.value)}
+                  />
+                </div>
+              </>
+            )}
+
+            {mode === "mes" && (
+              <div>
+                <label htmlFor="monthInp" className="mb-1 block text-sm font-medium">
+                  Mes
+                </label>
+                <input
+                  id="monthInp"
+                  type="month"
+                  className="rounded border px-2 py-1"
+                  value={monthISO}
+                  onChange={(e) => setMonthISO(e.target.value)}
+                />
+              </div>
+            )}
           </div>
-        ))}
-      </div>
+
+          {/* Resumen */}
+          <div className="mb-2 text-sm text-gray-700">
+            <span className="font-medium">Registros:</span> {filteredHistory.length}
+            {summary && (
+              <span className="ml-4">
+                <span className="font-medium">Promedios</span> — pH:{" "}
+                {summary.avg.ph?.toFixed(2)} | Turbidez:{" "}
+                {summary.avg.turbidez?.toFixed(2)} NTU | TDS:{" "}
+                {summary.avg.tds?.toFixed(1)} ppm | Temp:{" "}
+                {summary.avg.temperatura?.toFixed(1)} °C | Cond:{" "}
+                {summary.avg.conductividad?.toFixed(1)} µS/cm | ORP:{" "}
+                {summary.avg.orp?.toFixed(0)} mV
+              </span>
+            )}
+          </div>
+
+          {/* Tabla */}
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-gray-100 text-gray-700">
+                  <th className="px-3 py-2 text-left">Fecha/Hora</th>
+                  <th className="px-3 py-2 text-right">pH</th>
+                  <th className="px-3 py-2 text-right">Turbidez (NTU)</th>
+                  <th className="px-3 py-2 text-right">TDS (ppm)</th>
+                  <th className="px-3 py-2 text-right">Temp (°C)</th>
+                  <th className="px-3 py-2 text-right">Conduct. (µS/cm)</th>
+                  <th className="px-3 py-2 text-right">ORP (mV)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredHistory.map((r, i) => (
+                  <tr key={i} className={i % 2 ? "bg-white" : "bg-gray-50"}>
+                    <td className="px-3 py-2">{fmtDateTime(r.ts)}</td>
+                    <td className="px-3 py-2 text-right">{r.ph}</td>
+                    <td className="px-3 py-2 text-right">{r.turbidez}</td>
+                    <td className="px-3 py-2 text-right">{r.tds}</td>
+                    <td className="px-3 py-2 text-right">{r.temperatura}</td>
+                    <td className="px-3 py-2 text-right">{r.conductividad}</td>
+                    <td className="px-3 py-2 text-right">{r.orp}</td>
+                  </tr>
+                ))}
+
+                {!filteredHistory.length && (
+                  <tr>
+                    <td className="px-3 py-6 text-center text-gray-500" colSpan={7}>
+                      No hay datos para el filtro seleccionado.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
