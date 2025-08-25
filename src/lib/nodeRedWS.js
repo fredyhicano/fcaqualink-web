@@ -3,11 +3,12 @@
 // Construye la URL automáticamente según dónde se carga la web.
 // Si existe REACT_APP_WS_URL, la usa como override.
 const buildWsUrl = () => {
-  const envUrl = process.env.REACT_APP_WS_URL?.trim();
-  if (envUrl) return envUrl;
+  const manual = (process.env.REACT_APP_WS_URL || "").trim();
+  if (manual) return manual; // ej: ws://192.168.1.10:1880/ws/sensores
 
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const host = window.location.hostname; // p.ej. 192.168.1.50
+  const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
+  const proto = isHttps ? "wss:" : "ws:";
+  const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
   const port = process.env.REACT_APP_WS_PORT || 1880; // por defecto 1880
   const path = "/ws/sensores"; // tu endpoint en Node-RED
 
@@ -18,9 +19,9 @@ export const WS_URL = buildWsUrl();
 
 /**
  * Abre un WebSocket con reconexión exponencial.
- * @param {function(object):void} onMessage callback cuando llega un mensaje
- * @param {function(string):void} onStatus  callback de estado: 'connecting'|'open'|'closed'|'error'
- * @returns {function():void} función para cerrar el socket manualmente
+ * @param {(data:any)=>void} onMessage callback cuando llega un mensaje
+ * @param {(status:'connecting'|'open'|'closed'|'error')=>void} onStatus callback de estado
+ * @returns {() => void} función para cerrar el socket manualmente
  */
 export function openSocket(onMessage, onStatus) {
   let retry = 0;
@@ -28,32 +29,32 @@ export function openSocket(onMessage, onStatus) {
   let closedByUser = false;
 
   const connect = () => {
-    onStatus?.("connecting");
+    onStatus && onStatus("connecting");
     ws = new WebSocket(WS_URL);
 
     ws.onopen = () => {
       retry = 0;
-      onStatus?.("open");
+      onStatus && onStatus("open");
     };
 
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
-        onMessage?.(data);
+        onMessage && onMessage(data);
       } catch {
         // si no es JSON, envíalo crudo
-        onMessage?.(ev.data);
+        onMessage && onMessage(ev.data);
       }
     };
 
     ws.onerror = () => {
-      onStatus?.("error");
-      // dejar que onclose maneje la reconexión
+      onStatus && onStatus("error");
     };
 
     ws.onclose = () => {
-      onStatus?.("closed");
+      onStatus && onStatus("closed");
       if (closedByUser) return;
+
       // backoff exponencial con tope
       retry = Math.min(retry + 1, 6); // 0..6
       const wait = 500 * Math.pow(2, retry); // 0.5s,1s,2s,4s,8s,16s
@@ -63,15 +64,13 @@ export function openSocket(onMessage, onStatus) {
 
   connect();
 
-  // API de control
   const api = {
-    send: (msg) => {
+    send(msg) {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        const payload = typeof msg === "string" ? msg : JSON.stringify(msg);
-        ws.send(payload);
+        ws.send(typeof msg === "string" ? msg : JSON.stringify(msg));
       }
     },
-    close: () => {
+    close() {
       closedByUser = true;
       if (
         ws &&
@@ -82,8 +81,10 @@ export function openSocket(onMessage, onStatus) {
     },
   };
 
-  // devolver función de limpieza
+  // Devuelve cleanup
   return () => api.close();
 }
 
-export default { WS_URL, openSocket };
+// Export nombrado + default (evita "no-anonymous-default-export")
+const nodeRedWS = { WS_URL, openSocket };
+export default nodeRedWS;

@@ -6,7 +6,7 @@ const firebaseConfig = {
   apiKey: "AIzaSyDqRTEoSKQnZnFVtEcbQn-2wwQ-tuxEyjw",
   authDomain: "fcaqualink.firebaseapp.com",
   projectId: "fcaqualink",
-  storageBucket: "fcaqualink.firebasestorage.app",
+  storageBucket: "fcaqualink.appspot.com", // <-- importante
   messagingSenderId: "708544989130",
   appId: "1:708544989130:web:bef62d890ed89673c47133",
 };
