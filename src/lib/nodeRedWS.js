@@ -1,90 +1,71 @@
-// src/lib/nodeRedWS.js
-
-// Construye la URL automáticamente según dónde se carga la web.
-// Si existe REACT_APP_WS_URL, la usa como override.
-const buildWsUrl = () => {
-  const manual = (process.env.REACT_APP_WS_URL || "").trim();
-  if (manual) return manual; // ej: ws://192.168.1.10:1880/ws/sensores
-
+export const getWSURL = () => {
   const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
-  const proto = isHttps ? "wss:" : "ws:";
-  const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
-  const port = process.env.REACT_APP_WS_PORT || 1880; // por defecto 1880
-  const path = "/ws/sensores"; // tu endpoint en Node-RED
-
-  return `${proto}//${host}:${port}${path}`;
+  const proto = isHttps ? "wss" : "ws";
+  const host = isHttps ? window.location.host : "raspberry-fredyhi.local:1880";
+  return `${proto}://${host}/ws/sensores`;
 };
 
-export const WS_URL = buildWsUrl();
+export const WS_URL = getWSURL();
 
-/**
- * Abre un WebSocket con reconexión exponencial.
- * @param {(data:any)=>void} onMessage callback cuando llega un mensaje
- * @param {(status:'connecting'|'open'|'closed'|'error')=>void} onStatus callback de estado
- * @returns {() => void} función para cerrar el socket manualmente
- */
 export function openSocket(onMessage, onStatus) {
+  let stopped = false;
   let retry = 0;
-  let ws;
-  let closedByUser = false;
+  let kaTimer = null;
+  let reconnectTimer = null;
+  let ws = null;
+
+  const setStatus = (s) => {
+    if (onStatus) onStatus(s);
+  };
 
   const connect = () => {
-    onStatus && onStatus("connecting");
-    ws = new WebSocket(WS_URL);
+    setStatus("connecting");
+    const url = getWSURL();
+    ws = new WebSocket(url);
 
     ws.onopen = () => {
       retry = 0;
-      onStatus && onStatus("open");
+      setStatus("open");
+      clearInterval(kaTimer);
+      kaTimer = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send("ping");
+      }, 30000);
     };
 
-    ws.onmessage = (ev) => {
+    ws.onmessage = (e) => {
+      if (!onMessage) return;
       try {
-        const data = JSON.parse(ev.data);
-        onMessage && onMessage(data);
+        onMessage(JSON.parse(e.data));
       } catch {
-        // si no es JSON, envíalo crudo
-        onMessage && onMessage(ev.data);
+        onMessage(e.data);
       }
     };
 
-    ws.onerror = () => {
-      onStatus && onStatus("error");
+    ws.onclose = (ev) => {
+      clearInterval(kaTimer);
+      setStatus("closed");
+      if (stopped) return;
+      const delay = Math.min(30000, 1000 * Math.pow(2, retry++));
+      reconnectTimer = setTimeout(connect, delay);
+      console.warn("WS closed", ev.code, ev.reason, "retry in", delay, "ms");
     };
 
-    ws.onclose = () => {
-      onStatus && onStatus("closed");
-      if (closedByUser) return;
-
-      // backoff exponencial con tope
-      retry = Math.min(retry + 1, 6); // 0..6
-      const wait = 500 * Math.pow(2, retry); // 0.5s,1s,2s,4s,8s,16s
-      setTimeout(connect, wait);
+    ws.onerror = () => {
+      setStatus("error");
+      try {
+        ws.close();
+      } catch {}
     };
   };
 
   connect();
 
-  const api = {
-    send(msg) {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(typeof msg === "string" ? msg : JSON.stringify(msg));
-      }
-    },
-    close() {
-      closedByUser = true;
-      if (
-        ws &&
-        (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
-      ) {
-        ws.close();
-      }
-    },
+  return () => {
+    stopped = true;
+    clearInterval(kaTimer);
+    clearTimeout(reconnectTimer);
+    try {
+      if (ws) ws.close();
+    } catch {}
   };
-
-  // Devuelve cleanup
-  return () => api.close();
 }
-
-// Export nombrado + default (evita "no-anonymous-default-export")
-const nodeRedWS = { WS_URL, openSocket };
-export default nodeRedWS;

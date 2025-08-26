@@ -20,10 +20,8 @@ export default function useNodeRedWS() {
     };
   }, []);
 
-  // función para enviar (si alguna vez quieres mandar algo al WS)
-  const send = (payload) => {
-    // opcional: podrías exponer también el send en openSocket
-    // para no complicarlo, aquí no lo usamos.
+  // placeholder por si luego quieres enviar mensajes
+  const send = () => {
     console.warn("send() no implementado en este hook (unidireccional).");
   };
 
