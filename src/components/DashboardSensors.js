@@ -38,26 +38,20 @@ function calcQuality(name, value) {
   switch (name) {
     case "pH":
       return v >= 6.5 && v <= 8.5 ? "Buena" : v >= 6.0 && v <= 9.0 ? "Regular" : "Mala";
-
     case "ORP":
       return v > 300 ? "Buena" : v >= 100 ? "Regular" : "Mala";
-
     case "Turbidez":
       return v < 1 ? "Buena" : v <= 5 ? "Regular" : "Mala";
-
     case "Conductividad":
       return v < 500 ? "Buena" : v <= 1000 ? "Regular" : "Mala";
-
     case "Temperatura":
       return v >= 15 && v <= 30
         ? "Buena"
         : (v >= 10 && v < 15) || (v > 30 && v <= 35)
           ? "Regular"
           : "Mala";
-
     case "TDS":
       return v < 500 ? "Buena" : v <= 1000 ? "Regular" : "Mala";
-
     default:
       return "Desconocida";
   }
@@ -149,26 +143,33 @@ function sameMonth(ts, yyyy_mm) {
   return d.getFullYear() === y && d.getMonth() + 1 === m;
 }
 
+// === NUEVO: utilidades para pedir historial al backend ===
+// de ws://raspberry-fredyhi.local:1880/ws/sensores -> http://raspberry-fredyhi.local:1880
+function httpBaseFromWs(ws) {
+  try {
+    if (!ws) return null;
+    const u = new URL(ws);
+    const proto = u.protocol === "wss:" ? "https:" : "http:";
+    return `${proto}//${u.hostname}:${u.port}`;
+  } catch {
+    return null;
+  }
+}
+
+// "2025-08-27" -> "27/08/2025"
+function isoToDMY(iso) {
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+
 // ------------------ Dashboard ------------------
 const DashboardSensors = () => {
   const [sensors, setSensors] = useState([
     { id: 1, name: "ORP", value: 0, unit: "mV", quality: "Desconocida" },
-    {
-      id: 2,
-      name: "Conductividad",
-      value: 0,
-      unit: "µS/cm",
-      quality: "Desconocida",
-    },
+    { id: 2, name: "Conductividad", value: 0, unit: "µS/cm", quality: "Desconocida" },
     { id: 3, name: "Turbidez", value: 0, unit: "NTU", quality: "Desconocida" },
     { id: 4, name: "pH", value: 0, unit: "", quality: "Desconocida" },
-    {
-      id: 5,
-      name: "Temperatura",
-      value: 0,
-      unit: "°C",
-      quality: "Desconocida",
-    },
+    { id: 5, name: "Temperatura", value: 0, unit: "°C", quality: "Desconocida" },
     { id: 6, name: "TDS", value: 0, unit: "ppm", quality: "Desconocida" },
   ]);
 
@@ -186,6 +187,11 @@ const DashboardSensors = () => {
   const [startISO, setStartISO] = useState(todayISO);
   const [endISO, setEndISO] = useState(todayISO);
   const [monthISO, setMonthISO] = useState(thisMonthISO);
+
+  // === NUEVO: estados de historial proveniente del backend ===
+  const [remoteHist, setRemoteHist] = useState([]);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteError, setRemoteError] = useState(null);
 
   // Normaliza cualquier payload entrante -> objeto { ph, orp, ... }
   const normalizeIncoming = (raw) => {
@@ -213,8 +219,14 @@ const DashboardSensors = () => {
       }
     }
 
-    // 2) Objeto directo
-    if (typeof raw === "object" && !Array.isArray(raw)) return raw;
+    // 2) Objeto directo → remapear keys comunes del backend (temp, conduct)
+    if (typeof raw === "object" && !Array.isArray(raw)) {
+      const obj = { ...raw };
+      if (obj.temp != null && obj.temperatura == null) obj.temperatura = Number(obj.temp);
+      if (obj.conduct != null && obj.conductividad == null)
+        obj.conductividad = Number(obj.conduct);
+      return obj;
+    }
 
     // 3) Array de objetos
     if (Array.isArray(raw) && raw.length && typeof raw[0] === "object") {
@@ -241,7 +253,7 @@ const DashboardSensors = () => {
     return null;
   };
 
-  // Cuando llega un mensaje, actualizamos gauges y registramos snapshot en historial
+  // Cuando llega un mensaje, actualizamos gauges y registramos snapshot en historial local
   useEffect(() => {
     if (!lastMessage) return;
     const data = normalizeIncoming(lastMessage);
@@ -262,35 +274,89 @@ const DashboardSensors = () => {
     if (nextArray) {
       const rec = sensorsToRecord(nextArray);
       setHistory((prev) => {
-        const next = [...prev, rec].slice(-10000); // limita crecimiento
+        const next = [...prev, rec].slice(-10000);
         saveHistory(next);
         return next;
       });
     }
   }, [lastMessage]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Historial filtrado
+  // === NUEVO: traer historial desde Node-RED cuando estoy en la vista "historial"
+  useEffect(() => {
+    if (view !== "historial") return;
+
+    const base = httpBaseFromWs(wsUrl);
+    if (!base) return;
+
+    const params = new URLSearchParams();
+    if (mode === "dia") {
+      params.set("fecha", isoToDMY(dayISO)); // ?fecha=27/08/2025
+    } else if (mode === "rango") {
+      // Ajusta si tu flow usa otros nombres
+      params.set("inicio", isoToDMY(startISO));
+      params.set("fin", isoToDMY(endISO));
+    } else {
+      // "mes": ?mes=08&anio=2025
+      const [y, m] = monthISO.split("-");
+      params.set("mes", m);
+      params.set("anio", y);
+    }
+
+    const url = `${base}/api/sensores/historial?${params.toString()}`;
+
+    let cancel = false;
+    (async () => {
+      setRemoteLoading(true);
+      setRemoteError(null);
+      try {
+        const res = await fetch(url, { headers: { Accept: "application/json" } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        const norm = (Array.isArray(data) ? data : []).map((r) => ({
+          ts: r.ts,
+          ph: r.ph,
+          turbidez: r.turbidez,
+          tds: r.tds,
+          temperatura: r.temperatura ?? r.temp,
+          conductividad: r.conductividad ?? r.conduct,
+          orp: r.orp,
+        }));
+        if (!cancel) setRemoteHist(norm);
+      } catch (e) {
+        if (!cancel) {
+          setRemoteHist([]);
+          setRemoteError(e.message);
+        }
+      } finally {
+        if (!cancel) setRemoteLoading(false);
+      }
+    })();
+
+    return () => {
+      cancel = true;
+    };
+  }, [view, mode, dayISO, startISO, endISO, monthISO, wsUrl]);
+
+  // Historial a mostrar: si hay del backend, úsalo; si no, usa localStorage
   const filteredHistory = useMemo(() => {
+    if (view === "historial" && remoteHist.length) return remoteHist;
     if (mode === "dia") return history.filter((r) => sameDay(r.ts, dayISO));
     if (mode === "rango") return history.filter((r) => inRange(r.ts, startISO, endISO));
     return history.filter((r) => sameMonth(r.ts, monthISO));
-  }, [history, mode, dayISO, startISO, endISO, monthISO]);
+  }, [view, remoteHist, history, mode, dayISO, startISO, endISO, monthISO]);
 
   // Resumen (promedio)
   const summary = useMemo(() => {
     if (!filteredHistory.length) return null;
 
     const keys = ["ph", "turbidez", "tds", "temperatura", "conductividad", "orp"];
-
     const acc = {};
     keys.forEach((k) => (acc[k] = 0));
-
     filteredHistory.forEach((r) => keys.forEach((k) => (acc[k] += Number(r[k] ?? 0))));
-
     const n = filteredHistory.length;
     const avg = {};
     keys.forEach((k) => (avg[k] = acc[k] / n));
-
     return { n, avg };
   }, [filteredHistory]);
 
@@ -304,30 +370,21 @@ const DashboardSensors = () => {
         Calidad: s.quality,
       })),
     );
-
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Sensores");
-
-    const excelBuffer = XLSX.write(workbook, {
-      bookType: "xlsx",
-      type: "array",
-    });
-
+    const excelBuffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
     const blob = new Blob([excelBuffer], { type: "application/octet-stream" });
-
     saveAs(blob, `datos_sensores_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   const exportNowToPDF = () => {
     const doc = new jsPDF();
     doc.text("Reporte de Calidad del Agua", 14, 20);
-
     autoTable(doc, {
       startY: 30,
       head: [["Sensor", "Valor", "Unidad", "Calidad"]],
       body: sensors.map((s) => [s.name, s.value, s.unit, s.quality]),
     });
-
     doc.save(`datos_sensores_${new Date().toISOString().slice(0, 10)}.pdf`);
   };
 
@@ -345,10 +402,8 @@ const DashboardSensors = () => {
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Historial");
-
     const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
     const blob = new Blob([buf], { type: "application/octet-stream" });
-
     saveAs(blob, `historial_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
@@ -364,6 +419,7 @@ const DashboardSensors = () => {
         {/* Pestañas */}
         <div className="inline-flex overflow-hidden rounded-md shadow-sm">
           <button
+            type="button"
             className={`px-4 py-2 text-sm font-semibold ${
               view === "monitoreo"
                 ? "bg-blue-600 text-white"
@@ -374,6 +430,7 @@ const DashboardSensors = () => {
             Monitoreo
           </button>
           <button
+            type="button"
             className={`px-4 py-2 text-sm font-semibold ${
               view === "historial"
                 ? "bg-blue-600 text-white"
@@ -403,10 +460,16 @@ const DashboardSensors = () => {
           </button>
         </div>
       ) : (
-        <div className="mb-6 flex justify-end gap-4">
+        <div className="mb-6 flex items-center justify-end gap-4">
+          {remoteLoading && (
+            <span className="text-sm text-gray-500">Cargando historial…</span>
+          )}
+          {remoteError && (
+            <span className="text-sm text-red-600">Error: {remoteError}</span>
+          )}
           <button
             onClick={exportHistoryToExcel}
-            className="rounded bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700"
+            className="rounded bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
             disabled={!filteredHistory.length}
             title={
               !filteredHistory.length
@@ -560,11 +623,11 @@ const DashboardSensors = () => {
             {summary && (
               <span className="ml-4">
                 <span className="font-medium">Promedios</span> — pH:{" "}
-                {summary.avg.ph?.toFixed(2)} | Turbidez:{" "}
-                {summary.avg.turbidez?.toFixed(2)} NTU | TDS:{" "}
-                {summary.avg.tds?.toFixed(1)} ppm | Temp:{" "}
-                {summary.avg.temperatura?.toFixed(1)} °C | Cond:{" "}
-                {summary.avg.conductividad?.toFixed(1)} µS/cm | ORP:{" "}
+                {summary.avg.ph?.toFixed(2)} {" | "}Turbidez:{" "}
+                {summary.avg.turbidez?.toFixed(2)} NTU {" | "}TDS:{" "}
+                {summary.avg.tds?.toFixed(1)} ppm {" | "}Temp:{" "}
+                {summary.avg.temperatura?.toFixed(1)} °C {" | "}Cond:{" "}
+                {summary.avg.conductividad?.toFixed(1)} µS/cm {" | "}ORP:{" "}
                 {summary.avg.orp?.toFixed(0)} mV
               </span>
             )}
