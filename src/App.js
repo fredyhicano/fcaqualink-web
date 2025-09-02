@@ -1,70 +1,90 @@
-import React, { useState } from "react";
+import React from "react";
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { signOut } from "firebase/auth";
+
 import LayoutHeader from "./components/LayoutHeader";
 import AuthLogin from "./components/AuthLogin";
 import AuthRegister from "./components/AuthRegister";
 import AuthResetPassword from "./components/AuthResetPassword";
 import DashboardSensors from "./components/DashboardSensors";
 
-const App = () => {
-  const [currentView, setCurrentView] = useState("login");
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+import { AuthProvider, useAuth } from "./hooks/useAuth";
+import PrivateRoute from "./components/PrivateRoute";
+import { auth } from "./lib/firebase";
 
-  const handleLogin = (email, password) => {
-    // Aquí iría la lógica de autenticación con backend
-    setIsLoggedIn(true);
-    setCurrentView("dashboard");
-  };
+// Header + Dashboard envueltos con logout real
+function DashboardWithHeader() {
+  const navigate = useNavigate();
 
-  const handleRegister = (name, email, password) => {
-    // Aquí iría la lógica de registro con backend
-    setIsLoggedIn(true);
-    setCurrentView("dashboard");
-  };
-
-  const handleResetPassword = (email) => {
-    // Aquí iría la lógica de reseteo de contraseña
-    alert("Instrucciones enviadas a " + email);
-    setCurrentView("login");
-  };
-
-  const handleLogout = () => {
-    setIsLoggedIn(false);
-    setCurrentView("login");
-  };
-
-  const handleSwitchView = (view) => {
-    setCurrentView(view);
-  };
-
-  const renderView = () => {
-    if (!isLoggedIn) {
-      switch (currentView) {
-        case "login":
-          return <AuthLogin onLogin={handleLogin} onSwitchView={handleSwitchView} />;
-        case "register":
-          return (
-            <AuthRegister onRegister={handleRegister} onSwitchView={handleSwitchView} />
-          );
-        case "reset":
-          return (
-            <AuthResetPassword
-              onResetPassword={handleResetPassword}
-              onSwitchView={handleSwitchView}
-            />
-          );
-        default:
-          return <AuthLogin onLogin={handleLogin} onSwitchView={handleSwitchView} />;
-      }
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      navigate("/login", { replace: true });
+    } catch (err) {
+      console.error("Error al cerrar sesión:", err);
     }
-    return (
-      <>
-        <LayoutHeader title="FCAquaLink" onLogout={handleLogout} />
-        <DashboardSensors />
-      </>
-    );
   };
 
-  return <div className="min-h-screen bg-gray-100">{renderView()}</div>;
+  return (
+    <>
+      <LayoutHeader title="FCAquaLink" onLogout={handleLogout} />
+      <DashboardSensors />
+    </>
+  );
+}
+
+// Si ya estás logueado y visitas /login, redirige a /dashboard
+function LoginRoute() {
+  const { user, authReady } = useAuth();
+  if (!authReady) return <div style={{ padding: 24 }}>Cargando…</div>;
+  if (user) return <Navigate to="/dashboard" replace />;
+  // Si tu AuthLogin necesita props, agrégalas aquí (onLogin, onSwitchView, etc.)
+  return <AuthLogin />;
+}
+
+function RegisterRoute() {
+  const { user, authReady } = useAuth();
+  if (!authReady) return <div style={{ padding: 24 }}>Cargando…</div>;
+  if (user) return <Navigate to="/dashboard" replace />;
+  return <AuthRegister />;
+}
+
+function ResetRoute() {
+  const { user, authReady } = useAuth();
+  if (!authReady) return <div style={{ padding: 24 }}>Cargando…</div>;
+  if (user) return <Navigate to="/dashboard" replace />;
+  return <AuthResetPassword />;
+}
+
+const App = () => {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          {/* públicas */}
+          <Route path="/login" element={<LoginRoute />} />
+          <Route path="/register" element={<RegisterRoute />} />
+          <Route path="/reset" element={<ResetRoute />} />
+
+          {/* privadas */}
+          <Route
+            path="/dashboard"
+            element={
+              <PrivateRoute>
+                <DashboardWithHeader />
+              </PrivateRoute>
+            }
+          />
+
+          {/* raíz → a dashboard si logueado, si no a login */}
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+
+          {/* catch-all */}
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
+  );
 };
 
 export default App;

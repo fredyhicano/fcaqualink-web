@@ -4,6 +4,6 @@
   "semi": true,
   "trailingComma": "all",
   "printWidth": 90,
-  "endOfLine": "lf",
+  "endOfLine": "auto",
   "plugins": ["prettier-plugin-tailwindcss"]
 }
