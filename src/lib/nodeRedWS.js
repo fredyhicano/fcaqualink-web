@@ -1,71 +1,68 @@
-export const getWSURL = () => {
-  const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
-  const proto = isHttps ? "wss" : "ws";
-  const host = isHttps ? window.location.host : "raspberry-fredyhi.local:1880";
-  return `${proto}://${host}/ws/sensores`;
-};
+// src/lib/nodeRedWS.js
+// URL del WebSocket (cámbiala por la IP/host de tu Node-RED)
+// Puedes sobreescribir con REACT_APP_WS_URL en .env
+export const WS_URL = process.env.REACT_APP_WS_URL || "ws://192.168.0.9:1880/ws/sensores"; // <-- AJUSTA TU IP/PUERTO
 
-export const WS_URL = getWSURL();
-
+/**
+ * Abre un WebSocket con reconexión exponencial.
+ * onMessage: (msg | string) => void
+ * onStatus: (status: 'connecting'|'open'|'closed'|'error') => void
+ * Devuelve: () => void para cerrar.
+ */
 export function openSocket(onMessage, onStatus) {
-  let stopped = false;
-  let retry = 0;
-  let kaTimer = null;
-  let reconnectTimer = null;
   let ws = null;
-
-  const setStatus = (s) => {
-    if (onStatus) onStatus(s);
-  };
+  let closedByUser = false;
+  let retry = 0;
+  let retryTimer = null;
 
   const connect = () => {
-    setStatus("connecting");
-    const url = getWSURL();
-    ws = new WebSocket(url);
+    try {
+      onStatus && onStatus("connecting");
+      ws = new WebSocket(WS_URL);
 
-    ws.onopen = () => {
-      retry = 0;
-      setStatus("open");
-      clearInterval(kaTimer);
-      kaTimer = setInterval(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send("ping");
-      }, 30000);
-    };
+      ws.onopen = () => {
+        retry = 0;
+        onStatus && onStatus("open");
+      };
 
-    ws.onmessage = (e) => {
-      if (!onMessage) return;
-      try {
-        onMessage(JSON.parse(e.data));
-      } catch {
-        onMessage(e.data);
-      }
-    };
+      ws.onmessage = (ev) => {
+        // Entregamos raw string y el JSON si parsea
+        const raw = ev.data;
+        try {
+          const obj = JSON.parse(raw);
+          onMessage && onMessage(obj);
+        } catch {
+          onMessage && onMessage(raw);
+        }
+      };
 
-    ws.onclose = (ev) => {
-      clearInterval(kaTimer);
-      setStatus("closed");
-      if (stopped) return;
-      const delay = Math.min(30000, 1000 * Math.pow(2, retry++));
-      reconnectTimer = setTimeout(connect, delay);
-      console.warn("WS closed", ev.code, ev.reason, "retry in", delay, "ms");
-    };
+      ws.onerror = () => {
+        onStatus && onStatus("error");
+      };
 
-    ws.onerror = () => {
-      setStatus("error");
-      try {
-        ws.close();
-      } catch {}
-    };
+      ws.onclose = () => {
+        ws = null;
+        if (closedByUser) {
+          onStatus && onStatus("closed");
+          return;
+        }
+        onStatus && onStatus("closed");
+        const backoff = Math.min(10000, 1000 * Math.pow(2, retry++)); // 1s,2s,4s... máx 10s
+        clearTimeout(retryTimer);
+        retryTimer = setTimeout(connect, backoff);
+      };
+    } catch {
+      onStatus && onStatus("error");
+    }
   };
 
   connect();
 
   return () => {
-    stopped = true;
-    clearInterval(kaTimer);
-    clearTimeout(reconnectTimer);
+    closedByUser = true;
+    clearTimeout(retryTimer);
     try {
-      if (ws) ws.close();
+      ws && ws.close();
     } catch {}
   };
 }
