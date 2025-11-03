@@ -1,3 +1,4 @@
+// src/App.js
 import React from "react";
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import { signOut } from "firebase/auth";
@@ -38,15 +39,49 @@ function LoginRoute() {
   const { user, authReady } = useAuth();
   if (!authReady) return <div style={{ padding: 24 }}>Cargando…</div>;
   if (user) return <Navigate to="/dashboard" replace />;
-  // Si tu AuthLogin necesita props, agrégalas aquí (onLogin, onSwitchView, etc.)
   return <AuthLogin />;
 }
 
+// Registro: ahora SÍ pasamos onRegister
 function RegisterRoute() {
   const { user, authReady } = useAuth();
   if (!authReady) return <div style={{ padding: 24 }}>Cargando…</div>;
   if (user) return <Navigate to="/dashboard" replace />;
-  return <AuthRegister />;
+
+  // Implementación mínima de creación de usuario + rol por defecto en Firestore
+  const handleRegister = async (name, email, password) => {
+    // Importes dinámicos para evitar peso en el bundle inicial
+    const { getAuth, createUserWithEmailAndPassword, updateProfile } = await import(
+      "firebase/auth"
+    );
+    const { getFirestore, doc, setDoc, serverTimestamp } = await import(
+      "firebase/firestore"
+    );
+    const { app } = await import("./lib/firebase");
+
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // 1) Crear usuario en Auth
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+
+    // 2) Guardar displayName (opcional)
+    if (name?.trim()) {
+      await updateProfile(cred.user, { displayName: name.trim() });
+    }
+
+    // 3) Crear doc en Firestore con rol por defecto
+    await setDoc(doc(db, "users", cred.user.uid), {
+      email: email.toLowerCase(),
+      displayName: name || "",
+      role: "Tecnico", // Cambia si quieres: "Operador", "Tecnico" o "Consulta"
+      createdAt: serverTimestamp(),
+    });
+
+    return cred.user;
+  };
+
+  return <AuthRegister onRegister={handleRegister} />;
 }
 
 function ResetRoute() {
@@ -65,6 +100,8 @@ const App = () => {
           <Route path="/login" element={<LoginRoute />} />
           <Route path="/register" element={<RegisterRoute />} />
           <Route path="/reset" element={<ResetRoute />} />
+          {/* ALIAS para que el botón que navega a /forgot funcione */}
+          <Route path="/forgot" element={<ResetRoute />} />
 
           {/* privadas */}
           <Route

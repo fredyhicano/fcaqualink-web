@@ -1,7 +1,11 @@
+// src/components/AuthLogin.js
 import React, { useState } from "react";
-import { loginWithEmail } from "../lib/auth"; // <-- usamos Firebase Auth
+import { loginWithEmail } from "../lib/auth";
+import { useNavigate } from "react-router-dom";
 
 const AuthLogin = ({ onLogin, onSwitchView }) => {
+  const navigate = useNavigate();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -18,11 +22,11 @@ const AuthLogin = ({ onLogin, onSwitchView }) => {
 
     setLoading(true);
     try {
-      const cred = await loginWithEmail(email, password); // <-- valida en Firebase
+      const cred = await loginWithEmail(email, password);
       if (typeof onLogin === "function") {
-        onLogin(cred.user); // compatibilidad con tu flujo actual
+        onLogin(cred.user);
       } else {
-        window.location.href = "/"; // o la ruta de tu dashboard
+        navigate("/"); // SPA
       }
     } catch (err) {
       const code = err?.code || "";
@@ -45,6 +49,10 @@ const AuthLogin = ({ onLogin, onSwitchView }) => {
 
   const canSubmit = Boolean(email) && Boolean(password) && !loading;
 
+  const goRegister = () =>
+    onSwitchView ? onSwitchView("register") : navigate("/register");
+  const goReset = () => (onSwitchView ? onSwitchView("reset") : navigate("/forgot"));
+
   return (
     <div className="flex min-h-screen flex-col justify-center bg-gradient-to-br from-blue-500 via-cyan-300 to-emerald-300 py-12 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
@@ -63,7 +71,6 @@ const AuthLogin = ({ onLogin, onSwitchView }) => {
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="rounded-xl bg-white px-4 py-8 shadow-2xl sm:px-10">
-          {/* Mensaje de error */}
           {error && (
             <div className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {error}
@@ -121,7 +128,7 @@ const AuthLogin = ({ onLogin, onSwitchView }) => {
 
           <div className="mt-6 text-center">
             <button
-              onClick={() => onSwitchView?.("register")}
+              onClick={goRegister}
               className="text-sm text-blue-600 hover:text-blue-500"
               type="button"
             >
@@ -129,7 +136,7 @@ const AuthLogin = ({ onLogin, onSwitchView }) => {
             </button>
             <span className="mx-2 text-gray-400">|</span>
             <button
-              onClick={() => onSwitchView?.("reset")}
+              onClick={goReset}
               className="text-sm text-blue-600 hover:text-blue-500"
               type="button"
             >

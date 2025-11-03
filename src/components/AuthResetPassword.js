@@ -3,39 +3,64 @@ import React, { useState } from "react";
 import { sendPasswordResetEmail } from "firebase/auth";
 import { auth } from "../lib/firebase";
 import { getApp } from "firebase/app";
+import { useNavigate } from "react-router-dom";
 
-// Forzar idioma de emails a ES
-auth.languageCode = "es";
+// Forzar idioma de emails a ES (con guard)
+try {
+  if (auth) auth.languageCode = "es";
+} catch (_) {
+  // noop
+}
 
 const AuthResetPassword = ({ onSwitchView }) => {
+  const navigate = useNavigate();
+
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
 
   // Log de proyecto para confirmar que apunta a fcaqualink
-  console.log(
-    "Firebase project/authDomain:",
-    getApp().options.projectId,
-    getApp().options.authDomain,
-  );
+  try {
+    const app = getApp();
+    // eslint-disable-next-line no-console
+    console.log(
+      "Firebase project/authDomain:",
+      app.options.projectId,
+      app.options.authDomain,
+    );
+  } catch (_) {
+    /* noop */
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setMsg("");
     setErr("");
-    setLoading(true);
 
     const target = email.trim().toLowerCase();
+    if (!target) {
+      setErr("Ingresa tu correo.");
+      return;
+    }
 
+    setLoading(true);
     try {
-      await sendPasswordResetEmail(auth, target);
+      // actionCodeSettings opcional: continuar en /login del mismo origen
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const actionCodeSettings = origin
+        ? { url: `${origin}/login`, handleCodeInApp: false }
+        : undefined;
+
+      await sendPasswordResetEmail(auth, target, actionCodeSettings);
       setMsg(
         "Te enviamos un correo con instrucciones para restablecer tu contraseña. Revisa tu bandeja de entrada y también el spam.",
       );
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error("RESET ERROR:", error?.code, error?.message);
       const code = error?.code ?? "";
+
       if (code.includes("auth/user-not-found")) {
         setErr("No existe un usuario con ese correo.");
       } else if (code.includes("auth/invalid-email")) {
@@ -43,13 +68,24 @@ const AuthResetPassword = ({ onSwitchView }) => {
       } else if (code.includes("auth/too-many-requests")) {
         setErr("Demasiados intentos. Inténtalo más tarde.");
       } else if (code.includes("auth/unauthorized-continue-uri")) {
-        setErr("El dominio de redirección no está autorizado en Firebase.");
+        setErr(
+          "El dominio de redirección no está autorizado en Firebase (Authorized domains).",
+        );
+      } else if (code.includes("auth/unauthorized-domain")) {
+        setErr(
+          "Dominio no autorizado en Firebase. Agrega este dominio en Authentication → Sign-in method → Authorized domains.",
+        );
       } else {
         setErr("No se pudo enviar el correo. " + (error?.message ?? ""));
       }
     } finally {
       setLoading(false);
     }
+  };
+
+  const backToLogin = () => {
+    if (onSwitchView) onSwitchView("login");
+    else navigate("/login");
   };
 
   return (
@@ -111,13 +147,18 @@ const AuthResetPassword = ({ onSwitchView }) => {
 
           <div className="mt-6 text-center">
             <button
-              onClick={() => onSwitchView?.("login")}
+              onClick={backToLogin}
               className="text-sm text-blue-600 hover:text-blue-500"
               type="button"
             >
               Volver a Iniciar Sesión
             </button>
           </div>
+
+          {/* Nota rápida (quítala si no la quieres en UI):
+              Si ves 'auth/unauthorized-continue-uri' o 'auth/unauthorized-domain',
+              agrega tu dominio/host (p.ej., localhost, 127.0.0.1, tu IP LAN o tu dominio HTTPS)
+              en Firebase Console → Authentication → Sign-in method → Authorized domains. */}
         </div>
       </div>
     </div>
