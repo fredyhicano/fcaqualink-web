@@ -444,6 +444,11 @@ const DashboardSensors = () => {
   // TTL de "mojado"
   const wetUntilRef = useRef(0);
 
+  // ⇢ PAGINACIÓN (estado)
+  const PAGE_SIZES = [10, 25, 50, 100];
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
   // normalizador de payload entrante — **sin deps** (evita bucle)
   const normalizeIncoming = useCallback((raw) => {
     if (raw == null) return null;
@@ -652,6 +657,22 @@ const DashboardSensors = () => {
       return base.filter((r) => new Date(r.ts).getFullYear().toString() === year);
     return base;
   }, [view, remoteHist, history, mode, dayISO, startISO, endISO, monthISO, year]);
+
+  // ⇢ PAGINACIÓN (derivados)
+  const totalPages = Math.max(1, Math.ceil((filteredHistory.length || 0) / pageSize));
+
+  useEffect(() => {
+    // si cambian los datos o el pageSize, asegura que la página actual exista
+    if (page > totalPages) setPage(totalPages);
+  }, [filteredHistory.length, pageSize, totalPages, page]);
+
+  const paginatedHistory = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredHistory.slice(start, start + pageSize);
+  }, [filteredHistory, page, pageSize]);
+
+  const firstIndex = filteredHistory.length ? (page - 1) * pageSize + 1 : 0;
+  const lastIndex = Math.min(page * pageSize, filteredHistory.length);
 
   const buildSeries = (key) =>
     filteredHistory.map((r) => (isNum(r[key]) ? r[key] : null)).filter((v) => v != null);
@@ -1633,7 +1654,10 @@ const DashboardSensors = () => {
                 id="modeSel"
                 className="rounded border px-2 py-1"
                 value={mode}
-                onChange={(e) => setMode(e.target.value)}
+                onChange={(e) => {
+                  setMode(e.target.value);
+                  setPage(1); // ⇢ PAGINACIÓN: reset al cambiar modo
+                }}
               >
                 <option value="dia">Por día</option>
                 <option value="rango">Por rango de fechas</option>
@@ -1652,7 +1676,10 @@ const DashboardSensors = () => {
                   type="date"
                   className="rounded border px-2 py-1"
                   value={dayISO}
-                  onChange={(e) => setDayISO(e.target.value)}
+                  onChange={(e) => {
+                    setDayISO(e.target.value);
+                    setPage(1); // ⇢ PAGINACIÓN
+                  }}
                 />
               </div>
             )}
@@ -1668,7 +1695,10 @@ const DashboardSensors = () => {
                     type="date"
                     className="rounded border px-2 py-1"
                     value={startISO}
-                    onChange={(e) => setStartISO(e.target.value)}
+                    onChange={(e) => {
+                      setStartISO(e.target.value);
+                      setPage(1); // ⇢ PAGINACIÓN
+                    }}
                   />
                 </div>
                 <div>
@@ -1680,7 +1710,10 @@ const DashboardSensors = () => {
                     type="date"
                     className="rounded border px-2 py-1"
                     value={endISO}
-                    onChange={(e) => setEndISO(e.target.value)}
+                    onChange={(e) => {
+                      setEndISO(e.target.value);
+                      setPage(1); // ⇢ PAGINACIÓN
+                    }}
                   />
                 </div>
               </>
@@ -1696,7 +1729,10 @@ const DashboardSensors = () => {
                   type="month"
                   className="rounded border px-2 py-1"
                   value={monthISO}
-                  onChange={(e) => setMonthISO(e.target.value)}
+                  onChange={(e) => {
+                    setMonthISO(e.target.value);
+                    setPage(1); // ⇢ PAGINACIÓN
+                  }}
                 />
               </div>
             )}
@@ -1712,25 +1748,57 @@ const DashboardSensors = () => {
                   min="2000"
                   className="w-28 rounded border px-2 py-1"
                   value={year}
-                  onChange={(e) => setYear(e.target.value)}
+                  onChange={(e) => {
+                    setYear(e.target.value);
+                    setPage(1); // ⇢ PAGINACIÓN
+                  }}
                 />
               </div>
             )}
           </div>
 
-          <div className="mb-2 text-sm text-gray-700">
-            <span className="font-medium">Registros:</span> {filteredHistory.length}
-            {summary && (
-              <span className="ml-4">
-                <span className="font-medium">Promedios</span> — pH:{" "}
-                {formatValue("pH", summary.avg?.ph)} | Turbidez:{" "}
-                {formatValue("Turbidez", summary.avg?.turbidez)} NTU | TDS:{" "}
-                {formatValue("TDS", summary.avg?.tds)} ppm | Temp:{" "}
-                {formatValue("Temperatura", summary.avg?.temperatura)} °C | Cond:{" "}
-                {formatValue("Conductividad", summary.avg?.conductividad)} µS/cm | ORP:{" "}
-                {formatValue("ORP", summary.avg?.orp)} mV
-              </span>
-            )}
+          <div className="mb-2 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div className="text-sm text-gray-700">
+              <span className="font-medium">Registros:</span> {filteredHistory.length}
+              {summary && (
+                <span className="ml-4">
+                  <span className="font-medium">Promedios</span> — pH:{" "}
+                  {formatValue("pH", summary.avg?.ph)} | Turbidez:{" "}
+                  {formatValue("Turbidez", summary.avg?.turbidez)} NTU | TDS:{" "}
+                  {formatValue("TDS", summary.avg?.tds)} ppm | Temp:{" "}
+                  {formatValue("Temperatura", summary.avg?.temperatura)} °C | Cond:{" "}
+                  {formatValue("Conductividad", summary.avg?.conductividad)} µS/cm | ORP:{" "}
+                  {formatValue("ORP", summary.avg?.orp)} mV
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              {/* ⇢ PAGINACIÓN: selector de tamaño */}
+              <label className="text-sm text-gray-600">
+                Tamaño de página:&nbsp;
+                <select
+                  className="rounded border px-2 py-1"
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setPage(1);
+                  }}
+                >
+                  {PAGE_SIZES.map((sz) => (
+                    <option key={sz} value={sz}>
+                      {sz}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="text-sm text-gray-600">
+                {filteredHistory.length
+                  ? `Mostrando ${firstIndex}–${lastIndex} de ${filteredHistory.length}`
+                  : "Sin resultados"}
+              </div>
+            </div>
           </div>
 
           <div className="mb-4 flex items-center justify-end gap-3">
@@ -1781,8 +1849,11 @@ const DashboardSensors = () => {
                 </tr>
               </thead>
               <tbody>
-                {filteredHistory.map((r, i) => (
-                  <tr key={i} className={i % 2 ? "bg-white" : "bg-gray-50"}>
+                {paginatedHistory.map((r, i) => (
+                  <tr
+                    key={(page - 1) * pageSize + i}
+                    className={i % 2 ? "bg-white" : "bg-gray-50"}
+                  >
                     <td className="px-3 py-2">{fmtDateTime(r.ts)}</td>
                     <td className="px-3 py-2 text-right">{isNum(r.ph) ? r.ph : ""}</td>
                     <td className="px-3 py-2 text-right">
@@ -1799,7 +1870,7 @@ const DashboardSensors = () => {
                   </tr>
                 ))}
 
-                {!filteredHistory.length && (
+                {!paginatedHistory.length && (
                   <tr>
                     <td className="px-3 py-6 text-center text-gray-500" colSpan={7}>
                       No hay datos para el filtro seleccionado.
@@ -1808,6 +1879,47 @@ const DashboardSensors = () => {
                 )}
               </tbody>
             </table>
+          </div>
+
+          {/* ⇢ PAGINACIÓN: controles */}
+          <div className="mt-4 flex flex-col items-center justify-between gap-3 sm:flex-row">
+            <div className="text-sm text-gray-600">
+              Página {page} de {totalPages}
+            </div>
+            <div className="flex gap-2">
+              <button
+                className="rounded border px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50"
+                onClick={() => setPage(1)}
+                disabled={page <= 1}
+                title="Primera página"
+              >
+                « Primero
+              </button>
+              <button
+                className="rounded border px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                title="Anterior"
+              >
+                ‹ Anterior
+              </button>
+              <button
+                className="rounded border px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                title="Siguiente"
+              >
+                Siguiente ›
+              </button>
+              <button
+                className="rounded border px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50"
+                onClick={() => setPage(totalPages)}
+                disabled={page >= totalPages}
+                title="Última página"
+              >
+                Último »
+              </button>
+            </div>
           </div>
         </div>
       )}
